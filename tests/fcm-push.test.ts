@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { createRegistration, parseApprovalMessage, tryParseApprovalMessage } from "../src/services/fcmPush";
+import {
+  createRegistration,
+  parseApprovalMessage,
+  parseIncomingApprovalPush,
+  parseNtfyApprovalMessage,
+  tryParseApprovalMessage,
+} from "../src/services/fcmPush";
 
 const now = new Date("2026-01-01T00:00:00Z");
 const validData = {
@@ -28,5 +34,24 @@ describe("fcmPush", () => {
   test("registration validates", () => {
     expect(createRegistration("tok", "android", "rid", now).registeredAt).toBe(now.toISOString());
     expect(() => createRegistration(" ", "ios", "rid")).toThrow();
+  });
+  test("parses ntfy JSON approval push via unified parser", () => {
+    const ntfyPayload = {
+      event: "message",
+      topic: "mw-rocksoul",
+      message: JSON.stringify(validData),
+    };
+    expect(parseNtfyApprovalMessage(ntfyPayload, now).challengeId).toBe("c1");
+    expect(parseIncomingApprovalPush(ntfyPayload, now).riskTier).toBe("R3");
+    expect(parseIncomingApprovalPush({ data: validData }, now).challengeId).toBe("c1");
+  });
+  test("rejects malformed or expired ntfy approval push", () => {
+    expect(() => parseNtfyApprovalMessage({ message: "not-json" }, now)).toThrow();
+    expect(() =>
+      parseIncomingApprovalPush(
+        { message: JSON.stringify({ ...validData, expiresAt: "2025-12-31T00:00:00Z" }) },
+        now,
+      ),
+    ).toThrow();
   });
 });

@@ -59,3 +59,51 @@ export function tryParseApprovalMessage(
     return null;
   }
 }
+
+export interface NtfyJsonMessage {
+  event?: string;
+  topic?: string;
+  title?: string;
+  message?: string;
+  time?: number;
+}
+
+export function parseNtfyApprovalMessage(
+  msg: NtfyJsonMessage,
+  now: Date = new Date(),
+): RocksoulApprovalChallenge {
+  if (typeof msg.message !== "string" || msg.message.trim() === "") {
+    throw new Error("ntfy message body missing");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(msg.message);
+  } catch {
+    throw new Error("ntfy approval message must be JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("ntfy approval payload must be an object");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.type !== "rocksoul_approval") {
+    throw new Error("unsupported ntfy message type");
+  }
+  return parseChallenge(record, now);
+}
+
+export function parseIncomingApprovalPush(
+  raw: unknown,
+  now: Date = new Date(),
+): RocksoulApprovalChallenge {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("push payload must be an object");
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.data === "object" && record.data !== null && !Array.isArray(record.data)) {
+    return parseApprovalMessage(record as FcmDataMessage, now);
+  }
+  if (typeof record.message === "string") {
+    return parseNtfyApprovalMessage(record as NtfyJsonMessage, now);
+  }
+  return parseChallenge(record, now);
+}
