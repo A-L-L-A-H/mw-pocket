@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "MoonWitness Pocket",
+    "slug": "mw-pocket",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "mw-pocket",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0A0B0F",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0B0F"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.moonwitness.pocket",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Scan MoonWitness Echo QR pairing codes."
+      }
+    },
+    "android": {
+      "package": "com.moonwitness.pocket",
+      "permissions": [
+        "CAMERA",
+        "INTERNET"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A0B0F"
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow MoonWitness Pocket to scan Echo pairing QR codes."
+        }
+      ]
+    ]
+  }
+}
