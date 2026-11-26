@@ -1,31 +1,41 @@
-import { parsePairUri } from '../src/pairing/pairUri'
+import { describe, expect, test } from "bun:test";
+import { parsePairUri } from "../src/pairing/pairUri";
 
-describe('Pair URI', () => {
-  test('valid mw-pocket:// pair URI parses correctly', () => {
-    const uri = 'mw-pocket://pair?echo=http://192.168.1.10:3010&rid=http://192.168.1.10:3005&mylove=https://a-l-l-a-h.com&token=abc123'
-    const result = parsePairUri(uri)
-    expect(result).toBeDefined()
-    expect(result?.echoUrl).toBe('http://192.168.1.10:3010')
-    expect(result?.ridUrl).toBe('http://192.168.1.10:3005')
-    expect(result?.myloveUrl).toBe('https://a-l-l-a-h.com')
-    expect(result?.token).toBe('abc123')
-  })
+describe("mw-pocket://pair URI parser", () => {
+  test("parses valid LAN/Tunnel pairing URI with optional token", () => {
+    const uri =
+      "mw-pocket://pair?echo=http%3A%2F%2F192.168.1.50%3A3010%2F&rid=https%3A%2F%2Frid.moonwitness.com&mylove=https%3A%2F%2Fa-l-l-a-h.com&token=echo_tok_999";
+    const parsed = parsePairUri(uri);
+    expect(parsed.echoUrl).toBe("http://192.168.1.50:3010");
+    expect(parsed.ridUrl).toBe("https://rid.moonwitness.com");
+    expect(parsed.myloveUrl).toBe("https://a-l-l-a-h.com");
+    expect(parsed.token).toBe("echo_tok_999");
+  });
 
-  test('rejects javascript: scheme', () => {
-    const uri = 'mw-pocket://pair?echo=javascript:alert(1)&rid=http://example.com&mylove=https://example.com'
-    expect(() => parsePairUri(uri)).toThrow('Unsafe URL scheme rejected')
-  })
+  test("rejects javascript:, data:, and non-http(s) schemes", () => {
+    expect(() =>
+      parsePairUri(
+        "mw-pocket://pair?echo=javascript:alert(1)&rid=https://rid.example.com&mylove=https://a-l-l-a-h.com"
+      )
+    ).toThrow(/unsafe/i);
 
-  test('rejects data: scheme', () => {
-    const uri = 'mw-pocket://pair?echo=data:text/html,&rid=http://example.com&mylove=https://example.com'
-    expect(() => parsePairUri(uri)).toThrow('Unsafe URL scheme rejected')
-  })
+    expect(() =>
+      parsePairUri(
+        "mw-pocket://pair?echo=https://echo.example.com&rid=data:text/html,evil&mylove=https://a-l-l-a-h.com"
+      )
+    ).toThrow(/unsafe/i);
 
-  test('rejects missing required fields', () => {
-    expect(() => parsePairUri('mw-pocket://pair?echo=http://example.com')).toThrow('Missing required')
-  })
+    expect(() =>
+      parsePairUri(
+        "mw-pocket://pair?echo=ftp://echo.example.com&rid=https://rid.example.com&mylove=https://a-l-l-a-h.com"
+      )
+    ).toThrow(/disallowed protocol/i);
+  });
 
-  test('validates URL format', () => {
-    expect(() => parsePairUri('mw-pocket://pair?echo=not-a-url&rid=http://example.com&mylove=https://example.com')).toThrow('Malformed URL')
-  })
-})
+  test("rejects non-mw-pocket scheme or wrong host", () => {
+    expect(() => parsePairUri("https://evil.com/pair?echo=https://a.com")).toThrow(/scheme/i);
+    expect(() =>
+      parsePairUri("mw-pocket://other?echo=https://a.com&rid=https://b.com&mylove=https://c.com")
+    ).toThrow(/unsupported/i);
+  });
+});

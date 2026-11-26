@@ -1,164 +1,290 @@
-import React from 'react'
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert, ActivityIndicator, Clipboard } from 'react-native'
-import { BarCodeScanner } from 'expo-barcode-scanner'
-import { parsePairUri } from '../../src/pairing/pairUri'
+import React, { useCallback, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import * as AuthSession from "expo-auth-session";
+import * as WebBrowser from "expo-web-browser";
+import { KeyRound, QrCode, Settings, Trash2 } from "lucide-react-native";
+import {
+  buildAuthorizationUrl,
+  createPkcePair,
+  discoverOidcConfiguration,
+  exchangeAuthorizationCode
+} from "../auth/pkce";
+import { usePocket } from "../context/PocketContext";
+import { RIOT_COLORS, RIOT_RADIUS, RIOT_SPACING } from "../theme/riot";
 
-export const SettingsScreen: React.FC = () => {
-  const [serverUrl, setServerUrl] = React.useState<string>('http://192.168.1.10:3000')
-  const [oidcState, setOidcState] = React.useState<'signed-in' | 'signed-out' | 'unknown'>('unknown')
-  const [cacheStatus, setCacheStatus] = React.useState<'healthy' | 'stale' | 'empty'>('healthy')
-  const [scanning, setScanning] = React.useState(false)
-  const [scannedUri, setScannedUri] = React.useState<string | null>(null)
+WebBrowser.maybeCompleteAuthSession();
 
-  const signInOidc = async () => {
-    try {
-      setOidcState('signed-in')
-    } catch (e) {
-      setOidcState('unknown')
-      Alert.alert('Sign in failed', String(e))
-    }
-  }
+export function SettingsScreen(): React.JSX.Element {
+  const { session, updateEndpoints, applyPairUri, saveOidcSession, signOut, clearCache } =
+    usePocket();
+  const [permission, requestPermission] = useCameraPermissions();
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [manualPairUri, setManualPairUri] = useState("");
+  const [echoUrlInput, setEchoUrlInput] = useState(session.echoUrl);
+  const [ridUrlInput, setRidUrlInput] = useState(session.ridUrl);
+  const [myloveUrlInput, setMyloveUrlInput] = useState(session.myloveUrl);
+  const [tokenInput, setTokenInput] = useState(session.accessToken ?? "");
+  const [feedback, setFeedback] = useState("Configured");
 
-  const signOutOidc = async () => {
-    try {
-      setOidcState('signed-out')
-    } catch (e) {
-      setOidcState('unknown')
-      Alert.alert('Sign out failed', String(e))
-    }
-  }
-
-  const handleBarCodeScanned = async (scanned: { type: string; data: string }) => {
-    setScanning(false)
-    const data = scanned.data
-    setScannedUri(data)
-    try {
-      const parsed = parsePairUri(data)
-      if (parsed) {
-        Alert.alert('Pairing URI Parsed', `Echo: ${parsed.echoUrl}\nRID: ${parsed.ridUrl}\nMyLove: ${parsed.myloveUrl}`)
+  const handleApplyPairUri = useCallback(
+    async (rawUri: string) => {
+      try {
+        const applied = await applyPairUri(rawUri);
+        setEchoUrlInput(applied.echoUrl);
+        setRidUrlInput(applied.ridUrl);
+        setMyloveUrlInput(applied.myloveUrl);
+        setTokenInput(applied.accessToken ?? "");
+        setScannerOpen(false);
+        setFeedback("Paired successfully via mw-pocket://pair");
+      } catch (pairError) {
+        setFeedback(pairError instanceof Error ? pairError.message : "Invalid pair URI");
       }
-    } catch (e) {
-      Alert.alert('Invalid Pairing URI', String(e))
-    }
-  }
+    },
+    [applyPairUri]
+  );
 
-  const scanPairingQr = async () => {
-    setScanning(true)
-  }
+  const handleSaveManualEndpoints = useCallback(async () => {
+    await updateEndpoints({
+      echoUrl: echoUrlInput,
+      ridUrl: ridUrlInput,
+      myloveUrl: myloveUrlInput,
+      accessToken: tokenInput
+    });
+    setFeedback("Server endpoints saved to SecureStore.");
+  }, [echoUrlInput, myloveUrlInput, ridUrlInput, tokenInput, updateEndpoints]);
 
-  const pastePairUriManual = async () => {
+  const handleOidcSignIn = useCallback(async () => {
+    setFeedback("Starting mw-rid OIDC PKCE S256...");
     try {
-      const uri = await Clipboard.getString()
-      if (uri) {
-        const parsed = parsePairUri(uri)
-        if (parsed) {
-          Alert.alert('Pairing URI Parsed', `Echo: ${parsed.echoUrl}\nRID: ${parsed.ridUrl}\nMyLove: ${parsed.myloveUrl}`)
-        }
+      const discovery = await discoverOidcConfiguration(ridUrlInput);
+      const pkce = await createPkcePair(64);
+      const redirectUri = AuthSession.makeRedirectUri({ scheme: "mw-pocket", path: "auth" });
+      const state = `mw-${Date.now()}`;
+      const authUrl = buildAuthorizationUrl({
+        discovery,
+        clientId: "mw-pocket",
+        redirectUri,
+        scope: "openid profile email offline_access",
+        state,
+        codeChallenge: pkce.codeChallenge
+      });
+
+      const browserResult = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      if (browserResult.type !== "success" || !browserResult.url) {
+        setFeedback("OIDC sign-in cancelled.");
+        return;
       }
-    } catch (e) {
-      Alert.alert('Invalid URI', String(e))
+      const callbackUrl = new URL(browserResult.url);
+      const code = callbackUrl.searchParams.get("code");
+      const returnedState = callbackUrl.searchParams.get("state");
+      if (!code || returnedState !== state) {
+        throw new Error("Invalid OIDC callback state or missing authorization code.");
+      }
+
+      const tokenPayload = await exchangeAuthorizationCode({
+        discovery,
+        clientId: "mw-pocket",
+        code,
+        redirectUri,
+        codeVerifier: pkce.codeVerifier
+      });
+      await saveOidcSession({
+        accessToken: tokenPayload.access_token,
+        refreshToken: tokenPayload.refresh_token,
+        idToken: tokenPayload.id_token,
+        expiresInSeconds: tokenPayload.expires_in
+      });
+      setFeedback("Signed in via mw-rid OIDC PKCE S256.");
+    } catch (oidcError) {
+      setFeedback(oidcError instanceof Error ? oidcError.message : "OIDC sign-in failed");
     }
-  }
+  }, [ridUrlInput, saveOidcSession]);
 
-  const toggleCache = async () => {
-    setCacheStatus(cacheStatus === 'healthy' ? 'stale' : 'healthy')
-  }
-
-  const cacheColor = (status: 'healthy' | 'stale' | 'empty'): string => {
-    switch (status) {
-      case 'healthy': return '#10B981'
-      case 'stale': return '#F5B731'
-      case 'empty': return '#EF4444'
-      default: return '#64748B'
+  const handleToggleScanner = useCallback(async () => {
+    if (!permission?.granted) {
+      const granted = await requestPermission();
+      if (!granted.granted) {
+        setFeedback("Camera permission denied. Use manual URI paste below.");
+        return;
+      }
     }
-  }
-
-  if (scanning) {
-    return (
-      <View style={styles.container}>
-        <BarCodeScanner
-          onBarCodeScanned={handleBarCodeScanned}
-          style={StyleSheet.absoluteFillObject}
-        />
-      </View>
-    )
-  }
+    setScannerOpen((prev) => !prev);
+  }, [permission?.granted, requestPermission]);
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.sectionTitle}>MoonWitness Pocket Settings</Text>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.titleRow}>
+        <Settings size={20} color={RIOT_COLORS.sovereignGold} />
+        <Text style={styles.title}>SETTINGS & PAIRING</Text>
+      </View>
+      <Text style={styles.feedback}>{feedback}</Text>
 
-        {/* OIDC Section */}
-        <View style={styles.settingRow}>
-          <Text style={styles.settingLabel}>OIDC Sign In</Text>
-          <TouchableOpacity style={styles.settingToggle} onPress={signInOidc}>
-            <Text style={[styles.settingValue, oidcState === 'signed-in' ? styles.signedIn : styles.signedOut]}>
-              {oidcState}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <QrCode size={18} color={RIOT_COLORS.radarCyan} />
+          <Text style={styles.cardTitle}>QR PAIRING & DEEP LINK</Text>
+        </View>
+        <Pressable style={styles.primaryButton} onPress={() => void handleToggleScanner()}>
+          <Text style={styles.primaryButtonText}>
+            {scannerOpen ? "CLOSE QR SCANNER" : "SCAN ECHO PAIRING QR"}
+          </Text>
+        </Pressable>
+        {scannerOpen ? (
+          <View style={styles.cameraContainer}>
+            <CameraView
+              style={styles.camera}
+              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+              onBarcodeScanned={(scanEvent) => {
+                if (scanEvent.data) {
+                  void handleApplyPairUri(scanEvent.data);
+                }
+              }}
+            />
+          </View>
+        ) : null}
+        <TextInput
+          style={styles.input}
+          placeholder="mw-pocket://pair?echo=...&rid=...&mylove=..."
+          placeholderTextColor={RIOT_COLORS.textMuted}
+          value={manualPairUri}
+          onChangeText={setManualPairUri}
+        />
+        <Pressable
+          style={styles.secondaryButton}
+          onPress={() => void handleApplyPairUri(manualPairUri)}
+        >
+          <Text style={styles.secondaryButtonText}>APPLY PAIR URI</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>LAN / CLOUDFLARE TUNNEL ENDPOINTS</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="mw-echo URL"
+          placeholderTextColor={RIOT_COLORS.textMuted}
+          value={echoUrlInput}
+          onChangeText={setEchoUrlInput}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="mw-rid URL"
+          placeholderTextColor={RIOT_COLORS.textMuted}
+          value={ridUrlInput}
+          onChangeText={setRidUrlInput}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="A-L-L-A-H.COM / mw-mylove URL"
+          placeholderTextColor={RIOT_COLORS.textMuted}
+          value={myloveUrlInput}
+          onChangeText={setMyloveUrlInput}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="MW_ECHO_TOKEN (optional)"
+          placeholderTextColor={RIOT_COLORS.textMuted}
+          value={tokenInput}
+          onChangeText={setTokenInput}
+          secureTextEntry
+        />
+        <Pressable
+          style={styles.primaryButton}
+          onPress={() => void handleSaveManualEndpoints()}
+        >
+          <Text style={styles.primaryButtonText}>SAVE ENDPOINTS</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <KeyRound size={18} color={RIOT_COLORS.emerald} />
+          <Text style={styles.cardTitle}>MW-RID OIDC SSO ({session.mode.toUpperCase()})</Text>
+        </View>
+        <View style={styles.actionRow}>
+          <Pressable style={styles.primaryButton} onPress={() => void handleOidcSignIn()}>
+            <Text style={styles.primaryButtonText}>SIGN IN (PKCE S256)</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.secondaryButton, { borderColor: RIOT_COLORS.riotCrimson }]}
+            onPress={() => {
+              void signOut();
+              setFeedback("Signed out.");
+            }}
+          >
+            <Text style={[styles.secondaryButtonText, { color: RIOT_COLORS.riotCrimson }]}>
+              SIGN OUT
             </Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.settingToggle} onPress={signOutOidc}>
-            <Text style={styles.settingValue}>Sign Out</Text>
-          </TouchableOpacity>
+          </Pressable>
         </View>
-
-        {/* Server URLs */}
-        <View style={styles.settingRow}>
-          <Text style={styles.settingLabel}>Echo Server URL</Text>
-          <Text style={styles.settingValue}>{serverUrl}</Text>
-        </View>
-        <View style={styles.settingRow}>
-          <Text style={styles.settingLabel}>RID Server URL</Text>
-          <Text style={styles.settingValue}>http://192.168.1.10:3005</Text>
-        </View>
-        <View style={styles.settingRow}>
-          <Text style={styles.settingLabel}>MyLove URL</Text>
-          <Text style={styles.settingValue}>https://a-l-l-a-h.com</Text>
-        </View>
-
-        {/* Pairing Section */}
-        <View style={styles.sectionTitleStyle}>Pairing Configuration</View>
-        <View style={styles.settingRow}>
-          <Text style={styles.settingLabel}>Scan QR Code</Text>
-          <TouchableOpacity style={styles.settingToggle} onPress={scanPairingQr}>
-            <Text style={styles.settingValue}>Use Camera</Text>
-          </TouchableOpacity>
-        </View>
-        <View style={styles.settingRow}>
-          <Text style={styles.settingLabel}>Paste URI Manually</Text>
-          <TouchableOpacity style={styles.settingToggle} onPress={pastePairUriManual}>
-            <Text style={styles.settingValue}>Paste from Clipboard</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Cache Status */}
-        <View style={styles.sectionTitleStyle}>Cache</View>
-        <View style={styles.settingRow}>
-          <Text style={styles.settingLabel}>Snapshot Cache</Text>
-          <Text style={[styles.settingValue, { color: cacheColor(cacheStatus) }]}>{cacheStatus}</Text>
-        </View>
-        <TouchableOpacity style={styles.settingToggle} onPress={toggleCache}>
-          <Text style={styles.settingValue}>Toggle Cache</Text>
-        </TouchableOpacity>
-
-        {/* Version & Help */}
-        <View style={styles.sectionTitleStyle}>Version & Help</View>
-        <Text style={styles.settingLabel}>Version 1.0.0</Text>
-        <Text style={styles.settingLabel}>Built with Expo SDK 52</Text>
-      </ScrollView>
-    </View>
-  )
+        <Pressable
+          style={styles.cacheButton}
+          onPress={() => {
+            void clearCache();
+            setFeedback("Offline snapshot cache cleared.");
+          }}
+        >
+          <Trash2 size={14} color={RIOT_COLORS.textSecondary} />
+          <Text style={styles.cacheButtonText}>CLEAR OFFLINE SNAPSHOT CACHE</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0B0F' },
-  content: { padding: 16 },
-  sectionTitle: { fontSize: 20, fontWeight: '600', color: '#F8FAFC', marginBottom: 20 },
-  sectionTitleStyle: { fontSize: 16, fontWeight: '500', color: '#F5B731', marginBottom: 8, marginTop: 8 },
-  settingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, paddingBottom: 8, borderBottomColor: '#252B3D', borderBottomWidth: 1 },
-  settingLabel: { color: '#64748B', fontSize: 14 },
-  settingToggle: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  settingValue: { color: '#F8FAFC', fontSize: 14 },
-  signedIn: { color: '#10B981' },
-  signedOut: { color: '#EF4444' },
-})
+  container: { flex: 1, backgroundColor: RIOT_COLORS.canvas },
+  content: { padding: RIOT_SPACING.lg, gap: RIOT_SPACING.md },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: RIOT_SPACING.sm },
+  title: { color: RIOT_COLORS.textPrimary, fontSize: 20, fontWeight: "800" },
+  feedback: { color: RIOT_COLORS.radarCyan, fontSize: 12 },
+  card: {
+    backgroundColor: RIOT_COLORS.surface,
+    borderColor: RIOT_COLORS.border,
+    borderWidth: 1,
+    borderRadius: RIOT_RADIUS.lg,
+    padding: RIOT_SPACING.lg,
+    gap: RIOT_SPACING.sm
+  },
+  cardHeader: { flexDirection: "row", alignItems: "center", gap: RIOT_SPACING.sm },
+  cardTitle: { color: RIOT_COLORS.textPrimary, fontWeight: "700", fontSize: 13 },
+  cameraContainer: { height: 220, borderRadius: RIOT_RADIUS.md, overflow: "hidden" },
+  camera: { flex: 1 },
+  input: {
+    backgroundColor: RIOT_COLORS.surfaceElevated,
+    color: RIOT_COLORS.textPrimary,
+    borderRadius: RIOT_RADIUS.md,
+    borderWidth: 1,
+    borderColor: RIOT_COLORS.border,
+    paddingHorizontal: RIOT_SPACING.md,
+    paddingVertical: RIOT_SPACING.sm
+  },
+  primaryButton: {
+    flex: 1,
+    backgroundColor: RIOT_COLORS.sovereignGold,
+    paddingVertical: RIOT_SPACING.sm,
+    paddingHorizontal: RIOT_SPACING.md,
+    borderRadius: RIOT_RADIUS.md,
+    alignItems: "center"
+  },
+  primaryButtonText: { color: RIOT_COLORS.canvas, fontWeight: "800", fontSize: 12 },
+  secondaryButton: {
+    paddingVertical: RIOT_SPACING.sm,
+    paddingHorizontal: RIOT_SPACING.md,
+    borderRadius: RIOT_RADIUS.md,
+    borderWidth: 1,
+    borderColor: RIOT_COLORS.radarCyan,
+    alignItems: "center"
+  },
+  secondaryButtonText: { color: RIOT_COLORS.radarCyan, fontWeight: "800", fontSize: 12 },
+  actionRow: { flexDirection: "row", gap: RIOT_SPACING.sm },
+  cacheButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: RIOT_SPACING.sm
+  },
+  cacheButtonText: { color: RIOT_COLORS.textSecondary, fontSize: 11, fontWeight: "700" }
+});

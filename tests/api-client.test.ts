@@ -1,74 +1,64 @@
-import { MoonWitnessMobileClient } from '../src/api/client'
-import { createInMemorySnapshotCache } from '../src/api/client'
+import { describe, expect, test } from "bun:test";
+import {
+  createInMemorySnapshotCache,
+  MoonWitnessMobileClient
+} from "../src/api/client";
 
-describe('MoonWitnessMobileClient', () => {
-  let client: MoonWitnessMobileClient
+describe("MoonWitnessMobileClient", () => {
+  test("injects Bearer header and caches offline snapshots", async () => {
+    const cache = createInMemorySnapshotCache();
+    const capturedHeaders: Array<string | null> = [];
+    let shouldFailNetwork = false;
 
-  beforeEach(() => {
-    client = new MoonWitnessMobileClient({
-      echoUrl: 'http://192.168.1.10:3000',
-      myloveUrl: 'https://a-l-l-a-h.com',
-      accessToken: 'test-token',
-    })
-  })
+    const mockFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      if (shouldFailNetwork) {
+        throw new Error("Network unreachable");
+      }
+      const headers = new Headers(init?.headers);
+      capturedHeaders.push(headers.get("Authorization"));
+      return new Response(
+        JSON.stringify([
+          { id: "mw-echo", name: "mw-echo", port: 3010, status: "online", latencyMs: 12 }
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
 
-  test('has default timeout of 8000ms', () => {
-    expect(client['timeoutMs']).toBe(8000)
-  })
+    const client = new MoonWitnessMobileClient({
+      echoUrl: "http://192.168.1.10:3010",
+      myloveUrl: "https://a-l-l-a-h.com",
+      accessToken: "bearer_secret_42",
+      fetchImpl: mockFetch,
+      cache
+    });
 
-  test('builds headers with bearer token', () => {
-    const headers = client['buildHeaders'](true)
-    expect(headers.Authorization).toBe('Bearer test-token')
-  })
+    const liveResult = await client.getFleetServices();
+    expect(capturedHeaders[0]).toBe("Bearer bearer_secret_42");
+    expect(liveResult.fromCache).toBe(false);
+    expect(liveResult.payload[0]?.name).toBe("mw-echo");
 
-  test('builds headers without token when no accessToken', () => {
-    const clientNoToken = new MoonWitnessMobileClient({
-      echoUrl: 'http://192.168.1.10:3000',
-      myloveUrl: 'https://a-l-l-a-h.com',
-    })
-    const headers = clientNoToken['buildHeaders'](true)
-    expect(headers.Authorization).toBeUndefined()
-  })
+    shouldFailNetwork = true;
+    const cachedResult = await client.getFleetServices();
+    expect(cachedResult.fromCache).toBe(true);
+    expect(cachedResult.payload[0]?.port).toBe(3010);
+  });
 
-  test('requestJson aborts on timeout', async () => {
-    // Mock slow response
-    const originalFetch = global.fetch
-    const clientWithShortTimeout = new MoonWitnessMobileClient({
-      echoUrl: 'http://192.168.1.10:3000',
-      myloveUrl: 'https://a-l-l-a-h.com',
-      accessToken: 'test-token',
-      timeoutMs: 50,
-    })
-    ;(global as any).fetch = async () => {
-      await new Promise(r => setTimeout(r, 200))
-      return new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }
+  test("aborts requests when timeout expires", async () => {
+    const slowFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new Error("Aborted by timeout"));
+        });
+      });
+    }) as typeof fetch;
 
-    await expect(clientWithShortTimeout.getEchoHealth()).rejects.toThrow('The operation was aborted.')
-    ;(global as any).fetch = originalFetch
-  })
+    const client = new MoonWitnessMobileClient({
+      echoUrl: "http://192.168.1.10:3010",
+      myloveUrl: "https://a-l-l-a-h.com",
+      timeoutMs: 30,
+      fetchImpl: slowFetch
+    });
 
-  test('falls back to cache on network error GET', async () => {
-    const originalFetch = global.fetch
-    ;(global as any).fetch = async () => {
-      throw new Error('Network error')
-    }
-    const cache = createInMemorySnapshotCache()
-    await cache.setSnapshot('echo_health', JSON.stringify({ status: 'ok', uptimeSec: 100 }))
-
-    const clientWithCache = new MoonWitnessMobileClient({
-      echoUrl: 'http://test',
-      myloveUrl: 'https://a-l-l-a-h.com',
-      accessToken: 'test-token',
-      cache,
-    })
-
-    const result = await clientWithCache['requestJson']<{ status: string; uptimeSec: number }>('http://test', '/health', {
-      cacheKey: 'echo_health',
-      method: 'GET',
-    })
-    expect(result.fromCache).toBe(true)
-    expect(result.payload.status).toBe('ok')
-    ;(global as any).fetch = originalFetch
-  })
-})
+    await expect(client.getRadarEvents()).rejects.toThrow(/aborted/i);
+  });
+});

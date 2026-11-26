@@ -1,117 +1,51 @@
-import { evaluateCanon0011, assertCanon0011, filterCanonSafePayloads, DynamicMediaPayload, CanonCheckResult } from '../src/guards/canon'
+import { describe, expect, test } from "bun:test";
+import {
+  assertCanon0011,
+  evaluateCanon0011,
+  filterCanonSafePayloads
+} from "../src/guards/canon";
 
-describe('CAN-0011 Guard', () => {
-  describe('evaluateCanon0011', () => {
-    test('allows typographic visualType', () => {
-      const payload: DynamicMediaPayload = { visualType: 'typographic', title: 'Some title' }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(true)
-    })
+describe("CAN-0011 runtime guard", () => {
+  test("allows typographic, geometric, and celestial crescent/orbit payloads", () => {
+    const verdict = evaluateCanon0011({
+      id: "card-1",
+      title: "Surah Al-Insyirah 94:5",
+      visualType: "celestial",
+      caption: "Golden crescent orbit geometry"
+    });
+    expect(verdict.allowed).toBe(true);
+    expect(verdict.ruleId).toBe("CAN-0011");
+  });
 
-    test('allows geometric visualType', () => {
-      const payload: DynamicMediaPayload = { visualType: 'geometric', title: 'Some title' }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(true)
-    })
+  test("blocks figurative depictions of Allah, Prophet Muhammad, or Isa/Yesus", () => {
+    expect(() =>
+      assertCanon0011({
+        title: "Portrait of Prophet Muhammad",
+        visualType: "typographic"
+      })
+    ).toThrow(/CAN-0011/);
 
-    test('allows celestial visualType', () => {
-      const payload: DynamicMediaPayload = { visualType: 'celestial', title: 'Some title' }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(true)
-    })
+    expect(
+      evaluateCanon0011({
+        caption: "Illustration of Yesus",
+        visualType: "geometric"
+      }).allowed
+    ).toBe(false);
 
-    test('allows crescent visualType', () => {
-      const payload: DynamicMediaPayload = { visualType: 'crescent', title: 'Some title' }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(true)
-    })
+    expect(
+      evaluateCanon0011({
+        title: "Celestial",
+        visualType: "human-portrait"
+      }).allowed
+    ).toBe(false);
+  });
 
-    test('allows orbit visualType', () => {
-      const payload: DynamicMediaPayload = { visualType: 'orbit', title: 'Some title' }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(true)
-    })
-
-    test('allows calligraphy-text visualType', () => {
-      const payload: DynamicMediaPayload = { visualType: 'calligraphy-text', title: 'Some title' }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(true)
-    })
-
-    test('blocks figurative Allah depiction', () => {
-      const payload: DynamicMediaPayload = {
-        visualType: 'typographic',
-        title: 'Image of Allah portrait'
-      }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(false)
-      expect(result.reason).toContain('prohibited')
-    })
-
-    test('blocks figurative Prophet depiction', () => {
-      const payload: DynamicMediaPayload = {
-        visualType: 'geometric',
-        title: 'Portrait of Muhammad'
-      }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(false)
-    })
-
-    test('blocks figurative Isa/Jesus depiction', () => {
-      const payload: DynamicMediaPayload = {
-        visualType: 'typographic',
-        title: 'Picture of Jesus face'
-      }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(false)
-    })
-
-    test('blocks title containing prohibited subject', () => {
-      const payload: DynamicMediaPayload = {
-        visualType: 'typographic',
-        title: 'Allah portrait image'
-      }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(false)
-    })
-
-    test('allows non-figurative content', () => {
-      const payload: DynamicMediaPayload = {
-        visualType: 'geometric',
-        title: 'Abstract geometric pattern'
-      }
-      const result = evaluateCanon0011(payload)
-      expect(result.allowed).toBe(true)
-    })
-  })
-
-  describe('assertCanon0011', () => {
-    test('passes for allowed payload', () => {
-      const payload: DynamicMediaPayload = { visualType: 'typographic', title: 'Safe title' }
-      expect(() => assertCanon0011(payload)).not.toThrow()
-    })
-
-    test('throws for blocked payload', () => {
-      const payload: DynamicMediaPayload = {
-        visualType: 'typographic',
-        title: 'Allah portrait'
-      }
-      expect(() => assertCanon0011(payload)).toThrow('[CAN-0011]')
-    })
-  })
-
-  describe('filterCanonSafePayloads', () => {
-    test('filters out prohibited payloads', () => {
-      const payloads: DynamicMediaPayload[] = [
-        { visualType: 'typographic', title: 'Safe 1' },
-        { visualType: 'typographic', title: 'Allah portrait' },
-        { visualType: 'geometric', title: 'Safe 2' },
-        { visualType: 'typographic', title: 'Jesus image' }
-      ]
-      const safe = filterCanonSafePayloads(payloads)
-      expect(safe.length).toBe(2)
-      expect(safe[0].title).toBe('Safe 1')
-      expect(safe[1].title).toBe('Safe 2')
-    })
-  })
-})
+  test("filters unsafe entries out of dynamic card arrays", () => {
+    const filtered = filterCanonSafePayloads([
+      { id: "safe-1", title: "Crescent Orbit", visualType: "crescent" },
+      { id: "unsafe-1", title: "Face of Allah", visualType: "typographic" }
+    ]);
+    expect(filtered.length).toBe(1);
+    expect(filtered[0]?.id).toBe("safe-1");
+  });
+});

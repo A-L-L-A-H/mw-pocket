@@ -1,102 +1,193 @@
-import React from 'react'
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, ActivityIndicator, FlatList } from 'react-native'
-import { useBottomTabs } from '../navigation/bottom-tabs'
+import React, { useCallback, useEffect, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { CloudUpload, HardDrive, Trophy } from "lucide-react-native";
+import { BountyTaskEntry, DiskAuditEntry } from "../api/client";
+import { usePocket } from "../context/PocketContext";
+import { RIOT_COLORS, RIOT_RADIUS, RIOT_SPACING } from "../theme/riot";
 
-export const BountyVaultScreen: React.FC = () => {
-  const { navigate } = useBottomTabs()
-  const [bounties, setBounties] = React.useState<BountyTaskEntry[]>([])
-  const [loading, setLoading] = React.useState(true)
+const STATUS_SEQUENCE: readonly BountyTaskEntry["status"][] = [
+  "todo",
+  "in_progress",
+  "review",
+  "done"
+];
 
-  React.useEffect(() => {
-    ;(async () => {
-      try {
-        const client = (global as any).__MOBILE_CLIENT__
-        const result = await client.getBountyTasks()
-        setBounties(result.payload)
-      } catch (e) {
-        console.error('Bounty fetch error:', e)
-      } finally {
-        setLoading(false)
-      }
-    })()
-  }, [])
-
-  const advanceTask = async (taskId: string, nextStatus: BountyTaskEntry['status']) => {
-    try {
-      const client = (global as any).__MOBILE_CLIENT__
-      await client.advanceBountyTask(taskId, nextStatus)
-      setBounties(bounties.map(b => b.id === taskId ? { ...b, status: nextStatus } : b))
-    } catch (e) {
-      console.error('Advance error:', e)
-    }
-  }
-
-  const triggerBackup = async () => {
-    try {
-      const client = (global as any).__MOBILE_CLIENT__
-      const result = await client.triggerNineDriveBackup()
-      if (result.triggered) {
-        // Show success
-      }
-    } catch (e) {
-      console.error('Backup error:', e)
-    }
-  }
-
-  return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.sectionTitle}>Bounty & Vault</Text>
-        {loading ? (
-          <ActivityIndicator size="large" style={styles.loading} />
-        ) : (
-          <FlatList
-            data={bounties}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <View style={styles.bountyItem}>
-                <Text style={styles.bountyTitle}>{item.title}</Text>
-                <Text style={styles.bountyStatus}>{item.status}</Text>
-                <Text style={styles.bountyXp}>+{item.xpReward} XP</Text>
-                <TouchableOpacity style={styles.priorityBadge} onPress={() => navigate('AdvanceTask', { taskId: item.id, nextStatus: 'done' })}>
-                  <Text style={styles.priorityText}>{item.priority}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.button} onPress={() => triggerBackup()}>
-                  <Text style={styles.buttonText}>9Drive Backup</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            numColumns={2}
-          />
-        )}
-
-        <TouchableOpacity style={styles.button} onPress={() => navigate('Settings')}>
-          <Text style={styles.buttonText}>Settings</Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </View>
-  )
+function nextBountyStatus(current: BountyTaskEntry["status"]): BountyTaskEntry["status"] {
+  const currentIdx = STATUS_SEQUENCE.indexOf(current);
+  return STATUS_SEQUENCE[(currentIdx + 1) % STATUS_SEQUENCE.length];
 }
 
-interface BountyTaskEntry {
-  id: string
-  title: string
-  status: 'todo' | 'in_progress' | 'review' | 'done'
-  xpReward: number
-  priority: 'P0' | 'P1' | 'P2'
+export function BountyVaultScreen(): React.JSX.Element {
+  const { client } = usePocket();
+  const [tasks, setTasks] = useState<BountyTaskEntry[]>([]);
+  const [drives, setDrives] = useState<DiskAuditEntry[]>([]);
+  const [vaultNote, setVaultNote] = useState("Ready");
+
+  const loadVault = useCallback(async () => {
+    try {
+      const [tasksSnap, diskSnap] = await Promise.all([
+        client.getBountyTasks(),
+        client.getDiskAudit()
+      ]);
+      setTasks(tasksSnap.payload);
+      setDrives(diskSnap.payload);
+      setVaultNote(tasksSnap.fromCache ? "Cached Vault Telemetry" : "Live Vault Synced");
+    } catch (vaultError) {
+      setVaultNote(vaultError instanceof Error ? vaultError.message : "Vault offline");
+    }
+  }, [client]);
+
+  useEffect(() => {
+    void loadVault();
+  }, [loadVault]);
+
+  const handleAdvanceTask = useCallback(
+    async (task: BountyTaskEntry) => {
+      const targetStatus = nextBountyStatus(task.status);
+      try {
+        const updated = await client.advanceBountyTask(task.id, targetStatus);
+        setTasks((prev) =>
+          prev.map((entry) => (entry.id === task.id ? updated : entry))
+        );
+      } catch (advanceError) {
+        setVaultNote(
+          advanceError instanceof Error ? advanceError.message : "Task advance failed"
+        );
+      }
+    },
+    [client]
+  );
+
+  const handleBackup = useCallback(async () => {
+    setVaultNote("Triggering 9Drive Backup...");
+    try {
+      const backupOutcome = await client.triggerNineDriveBackup();
+      setVaultNote(`9Drive Backup ${backupOutcome.jobId} (${backupOutcome.target})`);
+    } catch (backupError) {
+      setVaultNote(backupError instanceof Error ? backupError.message : "Backup failed");
+    }
+  }, [client]);
+
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.title}>BOUNTY & VAULT</Text>
+          <Text style={styles.subtitle}>{vaultNote}</Text>
+        </View>
+        <Pressable style={styles.backupButton} onPress={() => void handleBackup()}>
+          <CloudUpload size={16} color={RIOT_COLORS.canvas} />
+          <Text style={styles.backupText}>9DRIVE BACKUP</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <Trophy size={18} color={RIOT_COLORS.sovereignGold} />
+          <Text style={styles.cardTitle}>BOUNTY KANBAN (TAP TO ADVANCE)</Text>
+        </View>
+        {tasks.map((task) => (
+          <Pressable
+            key={task.id}
+            style={styles.taskTile}
+            onPress={() => void handleAdvanceTask(task)}
+          >
+            <View style={styles.taskHeader}>
+              <Text style={styles.taskTitle}>{task.title}</Text>
+              <Text style={styles.xpBadge}>+{task.xpReward} XP</Text>
+            </View>
+            <Text style={styles.taskMeta}>
+              {task.priority} · {task.status.toUpperCase()}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <HardDrive size={18} color={RIOT_COLORS.radarCyan} />
+          <Text style={styles.cardTitle}>DISK DOCTOR GAUGES</Text>
+        </View>
+        {drives.map((drive) => {
+          const barColor =
+            drive.status === "healthy"
+              ? RIOT_COLORS.emerald
+              : drive.status === "warning"
+                ? RIOT_COLORS.warning
+                : RIOT_COLORS.danger;
+          return (
+            <View key={drive.drive} style={styles.driveRow}>
+              <View style={styles.driveHeader}>
+                <Text style={styles.driveLabel}>{drive.drive}</Text>
+                <Text style={styles.driveMeta}>
+                  {drive.usedPercent}% ({drive.freeGb}GB free / {drive.totalGb}GB)
+                </Text>
+              </View>
+              <View style={styles.gaugeTrack}>
+                <View
+                  style={[
+                    styles.gaugeFill,
+                    {
+                      width: `${Math.min(100, Math.max(0, drive.usedPercent))}%`,
+                      backgroundColor: barColor
+                    }
+                  ]}
+                />
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0B0F' },
-  content: { padding: 16 },
-  sectionTitle: { fontSize: 18, fontWeight: '600', color: '#F8FAFC', marginBottom: 12, marginTop: 8 },
-  loading: { marginTop: 20 },
-  bountyItem: { padding: 12, backgroundColor: '#1A1F2E', borderRadius: 8, marginBottom: 8 },
-  bountyTitle: { color: '#F8FAFC', fontWeight: '600', fontSize: 14 },
-  bountyStatus: { color: '#FF2A5F', fontSize: 12 },
-  bountyXp: { color: '#F5B731', marginLeft: 8, fontSize: 12 },
-  priorityBadge: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#7C3AED', borderRadius: 4, marginLeft: 8, fontSize: 10 },
-  priorityText: { color: '#F8FAFC', fontSize: 10, fontWeight: '600' },
-  button: { marginTop: 20, padding: 12, backgroundColor: '#FF2A5F', borderRadius: 8, alignItems: 'center' },
-  buttonText: { color: '#0A0B0F', fontWeight: '600' },
-})
+  container: { flex: 1, backgroundColor: RIOT_COLORS.canvas },
+  content: { padding: RIOT_SPACING.lg, gap: RIOT_SPACING.md },
+  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  title: { color: RIOT_COLORS.textPrimary, fontSize: 20, fontWeight: "800" },
+  subtitle: { color: RIOT_COLORS.textSecondary, fontSize: 12 },
+  backupButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: RIOT_COLORS.radarCyan,
+    paddingHorizontal: RIOT_SPACING.md,
+    paddingVertical: RIOT_SPACING.sm,
+    borderRadius: RIOT_RADIUS.md
+  },
+  backupText: { color: RIOT_COLORS.canvas, fontWeight: "800", fontSize: 11 },
+  card: {
+    backgroundColor: RIOT_COLORS.surface,
+    borderColor: RIOT_COLORS.border,
+    borderWidth: 1,
+    borderRadius: RIOT_RADIUS.lg,
+    padding: RIOT_SPACING.lg,
+    gap: RIOT_SPACING.sm
+  },
+  cardHeader: { flexDirection: "row", alignItems: "center", gap: RIOT_SPACING.sm },
+  cardTitle: { color: RIOT_COLORS.textPrimary, fontWeight: "700", fontSize: 13 },
+  taskTile: {
+    backgroundColor: RIOT_COLORS.surfaceElevated,
+    borderRadius: RIOT_RADIUS.md,
+    padding: RIOT_SPACING.md,
+    borderWidth: 1,
+    borderColor: RIOT_COLORS.border
+  },
+  taskHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  taskTitle: { color: RIOT_COLORS.textPrimary, fontWeight: "700", fontSize: 13, flex: 1 },
+  xpBadge: { color: RIOT_COLORS.sovereignGold, fontWeight: "800", fontSize: 12 },
+  taskMeta: { color: RIOT_COLORS.textMuted, fontSize: 11, marginTop: 4 },
+  driveRow: { gap: 4 },
+  driveHeader: { flexDirection: "row", justifyContent: "space-between" },
+  driveLabel: { color: RIOT_COLORS.textPrimary, fontWeight: "700", fontSize: 12 },
+  driveMeta: { color: RIOT_COLORS.textSecondary, fontSize: 11 },
+  gaugeTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: RIOT_COLORS.surfaceElevated,
+    overflow: "hidden"
+  },
+  gaugeFill: { height: 8, borderRadius: 4 }
+});
