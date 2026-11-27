@@ -226,8 +226,6 @@ async function requestVoucherApi<TResult>(
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 8000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const token = await Promise.resolve(opts.getAccessToken());
 
   const headers: Record<string, string> = {
@@ -240,7 +238,11 @@ async function requestVoucherApi<TResult>(
     headers["Content-Type"] = "application/json";
   }
 
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
   try {
+    timer = setTimeout(() => controller.abort(), timeoutMs);
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method,
       headers,
@@ -262,7 +264,9 @@ async function requestVoucherApi<TResult>(
 
     return (await response.json()) as TResult;
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -335,6 +339,7 @@ export function VoucherGeneratorScreen(): React.JSX.Element {
   const { session } = usePocket();
 
   const [baseUrlOverride, setBaseUrlOverride] = useState("");
+  const [appliedBaseUrlOverride, setAppliedBaseUrlOverride] = useState("");
   const [countInput, setCountInput] = useState("10");
   const [rateLimitInput, setRateLimitInput] = useState("2M/5M");
   const [timeLimitSecs, setTimeLimitSecs] = useState(3600);
@@ -350,6 +355,14 @@ export function VoucherGeneratorScreen(): React.JSX.Element {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const effectiveBaseUrl = useMemo(() => {
+    const trimmedOverride = appliedBaseUrlOverride.trim();
+    if (trimmedOverride !== "") {
+      return trimmedOverride;
+    }
+    return session.echoUrl || "http://127.0.0.1:3010";
+  }, [appliedBaseUrlOverride, session.echoUrl]);
+
+  const draftBaseUrl = useMemo(() => {
     const trimmedOverride = baseUrlOverride.trim();
     if (trimmedOverride !== "") {
       return trimmedOverride;
@@ -381,11 +394,19 @@ export function VoucherGeneratorScreen(): React.JSX.Element {
     loadVouchers().finally(() => setLoading(false));
   }, [loadVouchers]);
 
+  const commitAndRefresh = useCallback(async () => {
+    if (baseUrlOverride.trim() !== appliedBaseUrlOverride.trim()) {
+      setAppliedBaseUrlOverride(baseUrlOverride);
+      return;
+    }
+    await loadVouchers();
+  }, [appliedBaseUrlOverride, baseUrlOverride, loadVouchers]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadVouchers();
+    await commitAndRefresh();
     setRefreshing(false);
-  }, [loadVouchers]);
+  }, [commitAndRefresh]);
 
   const handleGenerateBatch = async () => {
     const validation = validateVoucherBatchInput({
@@ -405,7 +426,8 @@ export function VoucherGeneratorScreen(): React.JSX.Element {
       setSubmitting(true);
       setStatusMessage(`Generating ${validation.request.count} voucher(s)...`);
       const created = await generateVoucherBatch({
-        ...apiOptions,
+        baseUrl: draftBaseUrl,
+        getAccessToken: apiOptions.getAccessToken,
         request: validation.request
       });
       setVouchers((prev) => [...created, ...prev]);
@@ -426,7 +448,8 @@ export function VoucherGeneratorScreen(): React.JSX.Element {
     }
     try {
       const updated = await redeemVoucherCode({
-        ...apiOptions,
+        baseUrl: draftBaseUrl,
+        getAccessToken: apiOptions.getAccessToken,
         code,
         username
       });
@@ -489,6 +512,8 @@ export function VoucherGeneratorScreen(): React.JSX.Element {
           style={styles.input}
           value={baseUrlOverride}
           onChangeText={setBaseUrlOverride}
+          onEndEditing={() => setAppliedBaseUrlOverride(baseUrlOverride)}
+          onSubmitEditing={() => setAppliedBaseUrlOverride(baseUrlOverride)}
           placeholder={session.echoUrl || "http://127.0.0.1:3010"}
           placeholderTextColor={RIOT_COLORS.textMuted}
           autoCapitalize="none"
@@ -601,7 +626,7 @@ export function VoucherGeneratorScreen(): React.JSX.Element {
           })}
         </View>
         <View style={styles.iconActions}>
-          <Pressable style={styles.iconBtn} onPress={() => void loadVouchers()}>
+          <Pressable style={styles.iconBtn} onPress={() => void commitAndRefresh()}>
             <RefreshCw size={16} color={RIOT_COLORS.radarCyan} />
           </Pressable>
           <Pressable style={styles.iconBtn} onPress={() => void handleShareBatch()}>

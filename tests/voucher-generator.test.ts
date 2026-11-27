@@ -302,4 +302,76 @@ describe("VoucherGeneratorScreen & mw-isp voucher contracts", () => {
     expect(serialized).toContain("GENERATE BATCH");
     expect(serialized).toContain("https://echo.fleet.internal");
   });
+
+  test("VoucherGeneratorScreen avoids keystroke baseUrl fetches and does not leak timeout timers on token failure", async () => {
+    // 1. Verify TextInput commits baseUrlOverride on onEndEditing/onSubmitEditing rather than onChangeText
+    const element = voucherMod.VoucherGeneratorScreen() as unknown as {
+      type: unknown;
+      props: Record<string, unknown>;
+    };
+
+    const findElements = (
+      node: unknown,
+      predicate: (el: { type: unknown; props: Record<string, unknown> }) => boolean
+    ): Array<{ type: unknown; props: Record<string, unknown> }> => {
+      const results: Array<{ type: unknown; props: Record<string, unknown> }> = [];
+      if (!node || typeof node !== "object") return results;
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          results.push(...findElements(item, predicate));
+        }
+        return results;
+      }
+      const el = node as { type?: unknown; props?: Record<string, unknown> };
+      if (el.type && el.props) {
+        const typed = { type: el.type, props: el.props };
+        if (predicate(typed)) {
+          results.push(typed);
+        }
+        if (el.props.children !== undefined) {
+          results.push(...findElements(el.props.children, predicate));
+        }
+      }
+      return results;
+    };
+
+    const baseUrlInputs = findElements(
+      element,
+      (el) =>
+        el.type === "TextInput" &&
+        el.props.placeholder === "https://echo.fleet.internal"
+    );
+    expect(baseUrlInputs).toHaveLength(1);
+    expect(typeof baseUrlInputs[0]?.props.onChangeText).toBe("function");
+    expect(typeof baseUrlInputs[0]?.props.onEndEditing).toBe("function");
+    expect(typeof baseUrlInputs[0]?.props.onSubmitEditing).toBe("function");
+
+    // 2. Verify requestVoucherApi does not leak a timeout timer when getAccessToken rejects
+    const origSetTimeout = globalThis.setTimeout;
+    let timersCreated = 0;
+    let fetchCalled = false;
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      timersCreated += 1;
+      return origSetTimeout(...args);
+    }) as typeof setTimeout;
+
+    try {
+      await expect(
+        voucherMod.fetchVoucherList({
+          baseUrl: "https://isp.fleet.internal",
+          getAccessToken: async () => {
+            throw new Error("token failure");
+          },
+          fetchImpl: (async () => {
+            fetchCalled = true;
+            return new Response("[]");
+          }) as unknown as typeof fetch
+        })
+      ).rejects.toThrow("token failure");
+      expect(fetchCalled).toBe(false);
+      expect(timersCreated).toBe(0);
+    } finally {
+      globalThis.setTimeout = origSetTimeout;
+    }
+  });
 });
