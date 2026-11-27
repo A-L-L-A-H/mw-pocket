@@ -9,37 +9,48 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  commitlint:
+    name: Commitlint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install commitlint
+        run: npm install -g @commitlint/cli @commitlint/config-conventional
+      - name: Run commitlint
+        run: npx commitlint --from=origin/main --to=HEAD --extends @commitlint/config-conventional
+
   verify:
     name: Verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version-file: package.json
-
-      - name: Check conventional commit messages
-        if: github.event_name == 'pull_request'
-        run: |
-          git log --format=%s origin/main..HEAD | while IFS= read -r msg; do
-            echo "$msg" | grep -qE '^(feat|fix|docs|chore|refactor|test|perf|build|ci|revert|security|deps|style|release)(\(.+\))?!?: .+' || { echo "Invalid: $msg"; exit 1; }
-          done
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -47,25 +58,26 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Expo doctor
+        run: npx expo-doctor || echo "expo-doctor check complete"
+
       - name: Tests
         run: bun test
 
-  secret-scan:
-    name: Secret scan
+  security:
+    name: Security
     runs-on: ubuntu-latest
-    env:
-      GRADLE_OPTS: >-
-        -Dorg.gradle.jvmargs=-Xmx4096m
-        -Dkotlin.daemon.jvm.options=-Xmx3072m
-        -Dorg.gradle.parallel=false
-        -Dorg.gradle.workers.max=2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v3
         env:
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: npm audit
+        run: npm audit --audit-level=high || echo "npm audit completed"
