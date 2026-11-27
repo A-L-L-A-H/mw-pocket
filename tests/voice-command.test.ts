@@ -238,4 +238,79 @@ describe("voiceCommand service", () => {
     expect(result.intent).toEqual({ kind: "navigate", tab: "Radar" });
     expect(navigatedTabs).toEqual(["Radar"]);
   });
+
+  test("clamps large/negative voucher counts, ignores invalid slash rate limits in duration, and rejects bare target keywords", async () => {
+    expect(parseVoiceCommand("generate 999999 vouchers").intent).toEqual({
+      kind: "generate_vouchers",
+      count: 1000,
+      rateLimit: "2M/5M",
+      timeLimitSecs: 3600
+    });
+
+    expect(parseVoiceCommand("generate -5 vouchers").intent).toEqual({
+      kind: "generate_vouchers",
+      count: 1,
+      rateLimit: "2M/5M",
+      timeLimitSecs: 3600
+    });
+
+    expect(parseVoiceCommand("generate 10 vouchers 2M/5X").intent).toEqual({
+      kind: "generate_vouchers",
+      count: 10,
+      rateLimit: "2M/5M",
+      timeLimitSecs: 3600
+    });
+
+    for (const barePhrase of [
+      "disconnect session",
+      "disconnect isp session",
+      "disconnect session reason stale",
+      "restart app",
+      "restart paas app",
+      "ack event",
+      "acknowledge radar"
+    ]) {
+      expect(parseVoiceCommand(barePhrase).intent.kind).toBe("unknown");
+    }
+
+    expect(parseVoiceCommand("disconnect session-1").intent).toEqual({
+      kind: "disconnect_isp_session",
+      sessionId: "session-1",
+      reason: undefined
+    });
+    expect(parseVoiceCommand("restart app-1").intent).toEqual({
+      kind: "restart_paas_app",
+      appId: "app-1"
+    });
+
+    // Token rejection before fetch should reject without creating a dangling timeout timer
+    let fetchCalled = false;
+    const origSetTimeout = globalThis.setTimeout;
+    let timersCreated = 0;
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      timersCreated += 1;
+      return origSetTimeout(...args);
+    }) as typeof setTimeout;
+
+    try {
+      const failingTokenTranscriber = createHttpSpeechTranscriber({
+        endpointUrl: "https://echo.fleet.internal/api/voice/transcribe",
+        getAccessToken: async () => {
+          throw new Error("token unavailable");
+        },
+        fetchImpl: (async () => {
+          fetchCalled = true;
+          return new Response("{}");
+        }) as unknown as typeof fetch
+      });
+
+      await expect(
+        failingTokenTranscriber.transcribe({ uri: "file:///tmp/cmd.m4a" })
+      ).rejects.toThrow("token unavailable");
+      expect(fetchCalled).toBe(false);
+      expect(timersCreated).toBe(0);
+    } finally {
+      globalThis.setTimeout = origSetTimeout;
+    }
+  });
 });

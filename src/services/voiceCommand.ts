@@ -273,7 +273,7 @@ function normalizeRateLimit(rawRate: string): string {
 }
 
 function extractDurationSecs(normalizedText: string): number {
-  const withoutRateLimits = normalizedText.replace(/\b\d+[kmg]\/\d+[kmg]\b/gi, " ");
+  const withoutRateLimits = normalizedText.replace(/\S+\/\S+/g, " ");
   const dayMatch = /\b(\d+)\s*(?:days?|hari|d)\b/.exec(withoutRateLimits);
   if (dayMatch?.[1]) {
     const val = Number.parseInt(dayMatch[1], 10);
@@ -297,10 +297,41 @@ function extractDurationSecs(normalizedText: string): number {
   return 3600;
 }
 
-function matchTab(targetText: string): PocketRouteTab | null {
+const BARE_DISCONNECT_TARGETS = new Set([
+  "session",
+  "sesi",
+  "user",
+  "pengguna",
+  "isp",
+  "reason",
+  "because",
+  "alasan",
+  "karena"
+]);
+
+const BARE_RESTART_TARGETS = new Set([
+  "app",
+  "aplikasi",
+  "layanan",
+  "service",
+  "paas"
+]);
+
+const BARE_RADAR_TARGETS = new Set([
+  "event",
+  "alert",
+  "kejadian",
+  "sinyal",
+  "radar"
+]);
+
+function matchTab(targetText: string, exactOnly = false): PocketRouteTab | null {
   for (const entry of TAB_ALIASES) {
     for (const pattern of entry.patterns) {
-      if (pattern.test(targetText)) {
+      const effectivePattern = exactOnly
+        ? new RegExp(`^(?:${pattern.source})$`, pattern.flags)
+        : pattern;
+      if (effectivePattern.test(targetText)) {
         return entry.tab;
       }
     }
@@ -347,10 +378,10 @@ export function parseVoiceCommand(rawTranscript: string): ParsedVoiceCommand {
 
   // 2. ISP Session Disconnect
   const disconnectMatch =
-    /^(?:disconnect|kick|drop|terminate|coa\s+disconnect|putus|putuskan|tendang|hentikan)\s+(?:isp\s+)?(?:session|sesi|user|pengguna)?\s*([a-z0-9._:@-]+)(?:\s+(?:reason|because|alasan|karena)\s+(.+))?$/.exec(
+    /^(?:disconnect|kick|drop|terminate|coa\s+disconnect|putus|putuskan|tendang|hentikan)\s+(?:isp\s+)?(?:(?:session|sesi|user|pengguna)\s+)?([a-z0-9._:@-]+)(?:\s+(?:reason|because|alasan|karena)\s+(.+))?$/.exec(
       normalizedText
     );
-  if (disconnectMatch?.[1]) {
+  if (disconnectMatch?.[1] && !BARE_DISCONNECT_TARGETS.has(disconnectMatch[1])) {
     return {
       intent: {
         kind: "disconnect_isp_session",
@@ -365,10 +396,10 @@ export function parseVoiceCommand(rawTranscript: string): ParsedVoiceCommand {
 
   // 3. PaaS App Restart
   const restartMatch =
-    /^(?:restart|reboot|mulai\s+ulang|hidupkan\s+ulang)\s+(?:paas\s+)?(?:app|aplikasi|layanan|service)?\s*([a-z0-9._-]+)$/.exec(
+    /^(?:restart|reboot|mulai\s+ulang|hidupkan\s+ulang)\s+(?:paas\s+)?(?:(?:app|aplikasi|layanan|service)\s+)?([a-z0-9._-]+)$/.exec(
       normalizedText
     );
-  if (restartMatch?.[1]) {
+  if (restartMatch?.[1] && !BARE_RESTART_TARGETS.has(restartMatch[1])) {
     return {
       intent: {
         kind: "restart_paas_app",
@@ -382,10 +413,10 @@ export function parseVoiceCommand(rawTranscript: string): ParsedVoiceCommand {
 
   // 4. Radar Event Acknowledge
   const radarAckMatch =
-    /^(?:ack|acknowledge|konfirmasi|tandai)\s+(?:radar\s+)?(?:event|alert|kejadian|sinyal)?\s*([a-z0-9._-]+)$/.exec(
+    /^(?:ack|acknowledge|konfirmasi|tandai)\s+(?:radar\s+)?(?:(?:event|alert|kejadian|sinyal)\s+)?([a-z0-9._-]+)$/.exec(
       normalizedText
     );
-  if (radarAckMatch?.[1]) {
+  if (radarAckMatch?.[1] && !BARE_RADAR_TARGETS.has(radarAckMatch[1])) {
     return {
       intent: {
         kind: "ack_radar_event",
@@ -404,8 +435,8 @@ export function parseVoiceCommand(rawTranscript: string): ParsedVoiceCommand {
   );
   if (hasVoucherNoun && hasGenerateVerb) {
     const countMatch =
-      /\b(\d{1,4})\s+(?:hotspot\s+)?(?:vouchers?|kupon)\b/.exec(normalizedText) ??
-      /\b(?:count|jumlah)\s+(\d{1,4})\b/.exec(normalizedText);
+      /(?:^|\s)(-?\d+)\s+(?:hotspot\s+)?(?:vouchers?|kupon)\b/.exec(normalizedText) ??
+      /(?:^|\s)(?:count|jumlah)\s+(-?\d+)\b/.exec(normalizedText);
     const parsedCount = countMatch?.[1] ? Number.parseInt(countMatch[1], 10) : 1;
     const count = Math.max(1, Math.min(1000, Number.isFinite(parsedCount) ? parsedCount : 1));
 
@@ -489,7 +520,7 @@ export function parseVoiceCommand(rawTranscript: string): ParsedVoiceCommand {
       };
     }
   } else {
-    const bareTab = matchTab(normalizedText);
+    const bareTab = matchTab(normalizedText, true);
     if (bareTab) {
       return {
         intent: { kind: "navigate", tab: bareTab },
@@ -527,8 +558,6 @@ export function createHttpSpeechTranscriber(options: {
         throw new Error("Audio URI is required for transcription.");
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
       const token = options.getAccessToken ? await Promise.resolve(options.getAccessToken()) : null;
 
       const headers: Record<string, string> = {
@@ -539,7 +568,11 @@ export function createHttpSpeechTranscriber(options: {
         headers.Authorization = `Bearer ${token.trim()}`;
       }
 
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+
       try {
+        timer = setTimeout(() => controller.abort(), timeoutMs);
         const response = await fetchImpl(endpointUrl, {
           method: "POST",
           headers,
@@ -564,7 +597,9 @@ export function createHttpSpeechTranscriber(options: {
 
         return transcript.trim();
       } finally {
-        clearTimeout(timer);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
       }
     }
   };
