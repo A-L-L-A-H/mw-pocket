@@ -11,11 +11,13 @@ import {
   Moon,
   Radar,
   Settings,
+  Ticket,
   Trophy
 } from "lucide-react-native";
 import { PocketProvider } from "./src/context/PocketContext";
 import { HqFleetScreen } from "./src/screens/HqFleetScreen";
 import { BusinessOpsScreen } from "./src/screens/BusinessOpsScreen";
+import { VoucherGeneratorScreen } from "./src/screens/VoucherGeneratorScreen";
 import { SidekickScreen } from "./src/screens/SidekickScreen";
 import { WorldRadarScreen } from "./src/screens/WorldRadarScreen";
 import { CommsScreen } from "./src/screens/CommsScreen";
@@ -70,6 +72,14 @@ export default function App(): React.JSX.Element {
               options={{
                 title: "Ops",
                 tabBarIcon: ({ color, size }) => <Briefcase color={color} size={size} />
+              }}
+            />
+            <Tab.Screen
+              name="Vouchers"
+              component={VoucherGeneratorScreen}
+              options={{
+                title: "Vouchers",
+                tabBarIcon: ({ color, size }) => <Ticket color={color} size={size} />
               }}
             />
             <Tab.Screen
