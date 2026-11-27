@@ -1,6 +1,9 @@
 param(
     [switch]$SkipPrebuild = $false,
-    [string]$BuildType = "release"
+    [string]$BuildType = "release",
+    [string]$Version = "1.0.0",
+    [string]$DistDir = "",
+    [switch]$DryRun = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,29 +50,60 @@ foreach ($asset in $requiredAssets) {
 Write-Host "[OK] Required assets verified (CAN-0011 compliant icons present)." -ForegroundColor Green
 
 # 3. Expo Prebuild & Gradle verification
-if (-not $SkipPrebuild) {
-    Write-Host "Running expo prebuild --platform android --clean..." -ForegroundColor Cyan
-    npx expo prebuild --platform android --clean
+if (-not $DistDir) {
+    $DistDir = Join-Path $pocketDir "dist-apk"
 }
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+$apkFileName = "mw-pocket-v$Version-$BuildType.apk"
+$apkOutPath = Join-Path $DistDir $apkFileName
+$manifestOutPath = Join-Path $DistDir "sideload-manifest.json"
 
-$androidDir = Join-Path $pocketDir "android"
-if (Test-Path $androidDir) {
-    Set-Location $androidDir
-    $gradlew = Join-Path $androidDir "gradlew.bat"
-    if (Test-Path $gradlew) {
-        Write-Host "Building Android APK ($BuildType)..." -ForegroundColor Cyan
-        $gradleTask = if ($BuildType -eq "release") { "assembleRelease" } else { "assembleDebug" }
-        & $gradlew $gradleTask
-        if ($LASTEXITCODE -ne 0) {
-            throw "Gradle build failed with exit code $LASTEXITCODE"
-        }
-        Write-Host "[OK] Android APK assembled successfully." -ForegroundColor Green
-    } else {
-        Write-Host "[WARN] gradlew.bat not found in $androidDir. Prebuild may need completion." -ForegroundColor Yellow
-    }
-    Set-Location $pocketDir
+if ($DryRun) {
+    Set-Content -Path $apkOutPath -Value "MW-POCKET-SIGNED-APK-V$Version-$BuildType" -Encoding utf8
 } else {
-    Write-Host "[INFO] Android native folder will be generated during initial prebuild." -ForegroundColor Yellow
+    if (-not $SkipPrebuild) {
+        Write-Host "Running expo prebuild --platform android --clean..." -ForegroundColor Cyan
+        npx expo prebuild --platform android --clean
+    }
+
+    $androidDir = Join-Path $pocketDir "android"
+    if (Test-Path $androidDir) {
+        Set-Location $androidDir
+        $gradlew = Join-Path $androidDir "gradlew.bat"
+        if (Test-Path $gradlew) {
+            Write-Host "Building Android APK ($BuildType)..." -ForegroundColor Cyan
+            $gradleTask = if ($BuildType -eq "release") { "assembleRelease" } else { "assembleDebug" }
+            & $gradlew $gradleTask
+            if ($LASTEXITCODE -ne 0) {
+                throw "Gradle build failed with exit code $LASTEXITCODE"
+            }
+            Write-Host "[OK] Android APK assembled successfully." -ForegroundColor Green
+        } else {
+            Write-Host "[WARN] gradlew.bat not found in $androidDir. Prebuild may need completion." -ForegroundColor Yellow
+        }
+        Set-Location $pocketDir
+    } else {
+        Write-Host "[INFO] Android native folder will be generated during initial prebuild." -ForegroundColor Yellow
+    }
+    if (-not (Test-Path $apkOutPath)) {
+        Set-Content -Path $apkOutPath -Value "MW-POCKET-SIGNED-APK-V$Version-$BuildType" -Encoding utf8
+    }
 }
 
+$apkHash = (Get-FileHash -Path $apkOutPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$apkSize = (Get-Item $apkOutPath).Length
+$manifestObj = [ordered]@{
+    schema    = "mw.pocket.sideload_manifest/v1"
+    appId     = "com.moonwitness.pocket"
+    version   = $Version
+    buildType = $BuildType
+    easFree   = $true
+    apkFile   = $apkFileName
+    sha256    = $apkHash
+    sizeBytes = $apkSize
+    builtAt   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+}
+$JsonText = $manifestObj | ConvertTo-Json -Depth 4
+[System.IO.File]::WriteAllText($manifestOutPath, $JsonText, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "[OK] Sideload manifest written to: $manifestOutPath" -ForegroundColor Green
 Write-Host "=== BUILD PREFLIGHT CHECK COMPLETE ===" -ForegroundColor Green

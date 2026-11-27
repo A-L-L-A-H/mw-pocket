@@ -1,4 +1,8 @@
 import { filterCanonSafePayloads } from "../guards/canon";
+import {
+  RocksoulChallenge,
+  SignedApprovalResponse
+} from "../services/rocksoulApproval";
 
 export interface SnapshotCacheAdapter {
   getSnapshot(key: string): Promise<string | null>;
@@ -290,6 +294,28 @@ export class MoonWitnessMobileClient {
     return this.requestJson<DiskAuditEntry[]>(this.echoBaseUrl, "/api/disk/audit", {
       cacheKey: "disk_audit"
     });
+  }
+
+  async getRocksoulChallenges(): Promise<CachedResult<RocksoulChallenge[]>> {
+    return this.requestJson<RocksoulChallenge[]>(
+      this.echoBaseUrl,
+      "/api/rocksoul/approvals/pending",
+      { cacheKey: "rocksoul_pending_approvals" }
+    );
+  }
+
+  async submitRocksoulApproval(
+    signed: SignedApprovalResponse
+  ): Promise<{ challengeId: string; status: "approved" | "denied" }> {
+    const result = await this.requestJson<{ challengeId: string; status: "approved" | "denied" }>(
+      this.echoBaseUrl,
+      `/api/rocksoul/approvals/${encodeURIComponent(signed.challengeId)}`,
+      {
+        method: "POST",
+        body: signed
+      }
+    );
+    return result.payload;
   }
 
   async triggerNineDriveBackup(): Promise<StorageBackupResult> {
