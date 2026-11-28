@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons'
 
 type PocketTabParamList = {
   HqFleet: undefined
+  OpsGuard: undefined
   Sidekick: undefined
   WorldRadar: undefined
   Comms: undefined
